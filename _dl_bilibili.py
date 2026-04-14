@@ -6,15 +6,14 @@ import os
 import sys
 import json
 import time
+import threading
 from pathlib import Path
 
-from _utils import sanitize_filename, validate_video_file, cleanup_part_files
+from _utils import sanitize_filename, validate_video_file, cleanup_part_files, find_and_rename_dl_file
 
 # 强制行缓冲 + UTF-8 输出
-sys.stdout = os.fdopen(sys.stdout.fileno(), 'w', buffering=1)
-sys.stderr = os.fdopen(sys.stderr.fileno(), 'w', buffering=1)
-sys.stdout.reconfigure(encoding='utf-8', errors='replace')
-sys.stderr.reconfigure(encoding='utf-8', errors='replace')
+sys.stdout.reconfigure(line_buffering=True, encoding='utf-8', errors='replace')
+sys.stderr.reconfigure(line_buffering=True, encoding='utf-8', errors='replace')
 
 print(f"BILI_DL_BOOT pid={os.getpid()}", flush=True)
 
@@ -46,7 +45,7 @@ def process(video_url, output_dir_str):
 
         def make_ydl_opts():
             return {
-                'outtmpl': str(output_dir / "%(title)s.%(ext)s"),
+                'outtmpl': str(output_dir / f"dl{pid}_tmp.%(ext)s"),
                 'format': 'bestvideo+bestaudio/best',
                 'no_resume': True,
                 'ffmpeg_location': str(Path(__file__).parent / "ffmpeg" / "ffmpeg-master-latest-win64-gpl" / "bin"),
@@ -69,29 +68,45 @@ def process(video_url, output_dir_str):
             elif d['status'] == 'finished':
                 write_progress(100)
 
-        # 方式1：Chrome Cookie（网络不稳时重试2次）
+        # 方式1：Chrome Cookie（最多25秒，超时直接 kill 并切无Cookie）
         cookie_ok = False
-        for attempt in range(3):
+        for attempt in range(2):
             try:
                 push("status", f"尝试Cookie方式...（第{attempt+1}次）")
                 ydl_opts = make_ydl_opts()
                 ydl_opts['cookies-from-browser'] = 'chrome'
                 ydl_opts['progress_hooks'].append(download_hook)
-                with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-                    info = ydl.extract_info(video_url, download=True)
-                    video_title = info.get('title', 'unknown')
-                    video_file = output_dir / f"{video_title}.mp4"
-                    if not video_file.exists():
-                        for f in output_dir.glob(f"{video_title}.*"):
-                            if f.suffix in ['.mp4', '.mkv', '.flv']:
-                                video_file = f
-                                break
+
+                # 用独立线程运行 yt_dlp，每次 cookie 提取最多等 25 秒
+                result_holder = [None]   # (ok, title, file_or_error)
+                exc_holder = [None]
+
+                def run_ydl():
+                    try:
+                        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+                            info = ydl.extract_info(video_url, download=True)
+                            title = info.get('title', 'unknown')
+                            vfile = find_and_rename_dl_file(pid, title, output_dir)
+                        result_holder[0] = (True, title, vfile)
+                    except Exception as e:
+                        exc_holder[0] = e
+
+                t = threading.Thread(target=run_ydl)
+                t.start()
+                t.join(timeout=25)
+                if t.is_alive():
+                    push("status", f"Cookie提取超时（25秒），强制切换无Cookie模式")
+                    # 子线程仍在运行，忽略即可（yt_dlp 内部会自行终止）
+                    break
+                if exc_holder[0]:
+                    raise exc_holder[0]
+                ok, video_title, video_file = result_holder[0]
                 write_progress(100)
                 push("status", f"B站视频下载完成（Cookie）: {video_title}")
                 cookie_ok = True
                 break
             except Exception as e_cookie:
-                if attempt < 2:
+                if attempt < 1:
                     write_progress(0)
                     push("status", f"Cookie方式第{attempt+1}次失败: {e_cookie}，重试中...")
                     time.sleep(2)
@@ -107,12 +122,7 @@ def process(video_url, output_dir_str):
                 with yt_dlp.YoutubeDL(ydl_opts_direct) as ydl:
                     info = ydl.extract_info(video_url, download=True)
                     video_title = info.get('title', 'unknown')
-                    video_file = output_dir / f"{video_title}.mp4"
-                    if not video_file.exists():
-                        for f in output_dir.glob(f"{video_title}.*"):
-                            if f.suffix in ['.mp4', '.mkv', '.flv']:
-                                video_file = f
-                                break
+                    video_file = find_and_rename_dl_file(pid, video_title, output_dir)
                 write_progress(100)
                 push("status", f"B站视频下载完成（无Cookie）: {video_title}")
             except Exception as e2:

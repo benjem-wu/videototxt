@@ -137,10 +137,31 @@
         #saveBtn.active:hover {
             background: #0d8058;
         }
+        #polishBtn {
+            background: #2c5aa0;
+            color: #aaa;
+            cursor: not-allowed;
+            margin-right: 8px;
+        }
+        #polishBtn.active {
+            background: #3b7dd8;
+            color: white;
+            cursor: pointer;
+        }
+        #polishBtn.active:hover {
+            background: #4a8fe8;
+        }
         .save-row {
             display: flex;
             justify-content: flex-end;
-            margin-top: 8px;
+            align-items: center;
+            margin-top: 12px;
+            padding: 0 4px;
+        }
+        [contenteditable=true]:empty:before {
+            content: attr(placeholder);
+            color: #444;
+            font-style: italic;
         }
         .output-box::-webkit-scrollbar {
             width: 6px;
@@ -194,8 +215,9 @@
         <div class="output-box" id="output">
             <div class="placeholder">转写进度将显示在这里...</div>
         </div>
-        <div class="text-result" id="textResult" style="display:none" contenteditable="true" spellcheck="false" oninput="onTextChange()"></div>
-        <div class="save-row" id="saveRow" style="display:none">
+        <div class="text-result" id="textResult" contenteditable="true" spellcheck="false" oninput="onTextChange()" placeholder="在此粘贴或输入文字稿，点击「文本修饰」按钮进行润色..."></div>
+        <div class="save-row">
+            <button id="polishBtn" onclick="polishText()">文本修饰</button>
             <button id="saveBtn" onclick="saveText()">保存</button>
         </div>
     </div>
@@ -203,6 +225,15 @@
 
     <script>
         let es = null;
+
+        // 解码 Python unicode_escape 编码的中文 (\u6b63\u5728 -> 正在)
+        function decodeUnicode(s) {
+            if (!s) return s;
+            return s
+                .replace(/\\u[0-9a-fA-F]{4}/g, m => String.fromCharCode(parseInt(m.slice(2), 16)))
+                .replace(/\\n/g, '\n')
+                .replace(/\\r/g, '\r');
+        }
 
         let originalContent = '';
         let currentFilePath = '';
@@ -219,11 +250,9 @@
             const btn = document.getElementById('startBtn');
 
             output.innerHTML = '';
-            textResult.style.display = 'none';
             textResult.textContent = '';
             originalContent = '';
             currentFilePath = '';
-            document.getElementById('saveRow').style.display = 'none';
             document.getElementById('saveBtn').classList.remove('active');
             btn.disabled = true;
             btn.textContent = '转写中...';
@@ -233,18 +262,24 @@
             es = new EventSource('/transcribe?url=' + encodeURIComponent(url));
 
             es.addEventListener('status', function(e) {
-                addLog(e.data, 'tag');
+                try {
+                    addLog(decodeUnicode(e.data), 'tag');
+                } catch(_) {
+                    addLog(e.data, 'tag');
+                }
             });
 
             es.addEventListener('done', function(e) {
                 const result = JSON.parse(e.data);
-                addLog('✅ 全部完成！文件: ' + result.file, 'done');
+                try {
+                    addLog('全部完成！文件: ' + decodeUnicode(result.file), 'done');
+                } catch(_) {
+                    addLog('全部完成！文件: ' + result.file, 'done');
+                }
                 const textResult = document.getElementById('textResult');
-                textResult.style.display = 'block';
                 textResult.textContent = result.content;
                 originalContent = result.content;
                 currentFilePath = result.file;
-                document.getElementById('saveRow').style.display = 'flex';
                 document.getElementById('saveBtn').classList.remove('active');
                 btn.disabled = false;
                 btn.textContent = '转成文字';
@@ -253,7 +288,11 @@
             });
 
             es.addEventListener('error', function(e) {
-                addLog('❌ 错误: ' + e.data, 'err');
+                try {
+                    addLog('错误: ' + decodeUnicode(e.data), 'err');
+                } catch(_) {
+                    addLog('错误: ' + e.data, 'err');
+                }
                 btn.disabled = false;
                 btn.textContent = '转成文字';
                 es.close();
@@ -294,24 +333,37 @@
             document.getElementById('urlInput').value = '';
             document.getElementById('output').innerHTML = '<div class="placeholder">转写进度将显示在这里...</div>';
             const textResult = document.getElementById('textResult');
-            textResult.style.display = 'none';
             textResult.textContent = '';
-            document.getElementById('saveRow').style.display = 'none';
             document.getElementById('saveBtn').classList.remove('active');
             document.getElementById('startBtn').disabled = false;
             document.getElementById('startBtn').textContent = '转成文字';
             originalContent = '';
             currentFilePath = '';
+            isPolishing = false;
+            polishedContent = '';
         }
 
-        // 监听文字框变化，检测是否被修改
+        // 监听文字框变化，检测是否被修改，刷新按钮状态
         function onTextChange() {
             const textResult = document.getElementById('textResult');
+            const text = textResult.textContent;
             const saveBtn = document.getElementById('saveBtn');
-            if (textResult.textContent !== originalContent) {
+            const polishBtn = document.getElementById('polishBtn');
+
+            // 保存按钮：有文件路径且内容有变化
+            if (text !== originalContent) {
                 saveBtn.classList.add('active');
             } else {
                 saveBtn.classList.remove('active');
+            }
+
+            // 文本修饰按钮：有文字就可用
+            if (text.trim()) {
+                polishBtn.classList.add('active');
+                polishBtn.disabled = false;
+            } else {
+                polishBtn.classList.remove('active');
+                polishBtn.disabled = true;
             }
         }
 
@@ -343,6 +395,48 @@
             }).catch(() => {
                 btn.textContent = '保存失败';
                 setTimeout(() => btn.textContent = '保存', 2000);
+            });
+        }
+
+        let isPolishing = false;
+        let polishedContent = '';
+
+        function polishText() {
+            if (isPolishing) return;
+            const textResult = document.getElementById('textResult');
+            const content = textResult.textContent.trim();
+            if (!content) {
+                alert('文本内容为空，请先转写或输入文字');
+                return;
+            }
+
+            const btn = document.getElementById('polishBtn');
+            const output = document.getElementById('output');
+            btn.disabled = true;
+            btn.textContent = '润色中...';
+            isPolishing = true;
+
+            addLog('开始润色文本，使用 Gemma4 模型...', 'info');
+
+            fetch('/polish', {
+                method: 'POST',
+                headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify({content: content})
+            }).then(r => r.json()).then(data => {
+                if (data.ok) {
+                    polishedContent = data.content;
+                    textResult.textContent = polishedContent;
+                    addLog('文本修饰完成，可手动调整后再保存', 'done');
+                    document.getElementById('saveBtn').classList.add('active');
+                } else {
+                    addLog('润色失败: ' + (data.error || '未知错误'), 'err');
+                }
+            }).catch(e => {
+                addLog('润色请求失败: ' + e, 'err');
+            }).finally(() => {
+                btn.disabled = false;
+                btn.textContent = '文本修饰';
+                isPolishing = false;
             });
         }
     </script>

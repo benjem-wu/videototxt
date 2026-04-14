@@ -66,6 +66,51 @@ MAX_PATH_WARN = 200   # 警告阈值
 MAX_PATH_FAIL = 240   # 超过此值直接失败
 
 
+def find_and_rename_dl_file(pid, title, output_dir):
+    """
+    下载完成后，用 dl{pid}_tmp.* 查找下载文件，rename 为 {title}.{ext}
+    避免多进程文件冲突（不同视频用同一标题时的覆盖问题）。
+    """
+    # yt_dlp 可能返回非ASCII字符或字面量 \xHH 序列（如 \xb7）。
+    # 将所有非ASCII字符统一替换为英文中横线，确保 rename 成功。
+    try:
+        title = title.encode('ascii', errors='replace').decode('ascii')
+        # errors='replace' 用 U+FFFD 替换非ASCII字符，进一步替换为横线
+        title = title.replace('\ufffd', '-')
+        title = title.replace('?', '-').replace('*', '-').replace(':', '-')
+        title = re.sub(r'-+', '-', title).strip('-')
+    except Exception:
+        title = 'video'
+
+    output_path = Path(output_dir)
+    # yt-dlp 在 Windows 上可能用子进程创建文件，不依赖 pid，找所有 dl*_tmp.* 文件
+    candidates = list(output_path.rglob("dl*_tmp.*"))
+    # 按修改时间排序，最新的排在前面
+    candidates.sort(key=lambda p: p.stat().st_mtime, reverse=True)
+    if not candidates:
+        return None
+    src = candidates[0]
+    dst = output_path / f"{title}{src.suffix}"
+    if src == dst:
+        return dst
+    dst_name = sanitize_filename(title) + src.suffix
+    dst = output_path / dst_name
+    if src == dst:
+        return dst
+    try:
+        # 如果目标已存在（残留文件），先删掉再 rename
+        if dst.exists():
+            try:
+                dst.unlink()
+            except Exception:
+                pass
+        src.rename(dst)
+    except Exception as e:
+        print(f"[find_and_rename] rename failed: {e}, src={src}, dst={dst}", flush=True)
+        return None
+    return dst
+
+
 def cleanup_part_files(output_dir):
     """
     下载前清理所有残留的 .part 文件。

@@ -11,7 +11,7 @@ import time
 from pathlib import Path
 from datetime import datetime
 
-from _utils import check_path_length
+from _utils import check_path_length, sanitize_filename
 
 # 强制行缓冲 + UTF-8 输出
 sys.stdout = os.fdopen(sys.stdout.fileno(), 'w', buffering=1)
@@ -33,6 +33,8 @@ _whisper_model_cache = None
 
 def add_punctuation(text):
     """为连续文字添加中文标点"""
+    # 清理真实换行和字面 \n（Whisper 可能同时输出两种）
+    text = text.replace('\\n', '\n').replace('\n', '').replace('\\n', '')
     if not text or not text.strip():
         return text
     words = text.split()
@@ -58,18 +60,19 @@ def format_as_article(segments, max_gap=3.0, min_para_len=2):
         return []
     paragraphs, current_para, last_end = [], [], 0.0
     for seg in segments:
-        text = seg['text'].strip()
+        text = seg['text'].replace('\n', '').strip()
         if not text:
             continue
         gap = seg['start'] - last_end
         if gap > max_gap and len(current_para) >= min_para_len:
-            paragraphs.append(' '.join(current_para))
+            # 中文直接拼接，不加空格
+            paragraphs.append(''.join(current_para))
             current_para = [text]
         else:
             current_para.append(text)
         last_end = seg['end']
     if current_para:
-        paragraphs.append(' '.join(current_para))
+        paragraphs.append(''.join(current_para))
     return paragraphs
 
 
@@ -196,7 +199,7 @@ def process(video_file_str, output_dir_str, video_title_str, video_url_str):
         recent_ends = []  # 最近几段的结束时间，用于估算速度
 
         for s in segments:
-            whisper_segments.append({'start': s.start, 'end': s.end, 'text': s.text})
+            whisper_segments.append({'start': s.start, 'end': s.end, 'text': s.text.replace('\n', '')})
             last_end_time = s.end
             seg_count = len(whisper_segments)
             now = time.time()
@@ -221,9 +224,12 @@ def process(video_file_str, output_dir_str, video_title_str, video_url_str):
                 else:
                     eta_str = ""
 
-                status_text = f"[{pct}%] 转写中 {seg_count}段/{total_minutes:.1f}分钟"
-                if eta_str:
-                    status_text += f"，{eta_str}"
+                processed_min = last_end_time / 60
+                eta_min = int(eta_sec / 60) if eta_str else 0
+                eta_str2 = f"约剩{eta_min}分{int(eta_sec % 60)}秒" if eta_str else ""
+                status_text = f"[{pct}%] 转写中 {processed_min:.1f}/{total_minutes:.1f}分钟"
+                if eta_str2:
+                    status_text += f" ({eta_str2})"
                 push("status", status_text)
                 write_progress(5 + pct * 0.9)  # 转写占总进度 5%~95%
                 last_push_time = now
@@ -235,9 +241,11 @@ def process(video_file_str, output_dir_str, video_title_str, video_url_str):
         push("status", "[100%] 正在保存文字稿...")
         paragraphs = format_as_article(whisper_segments)
         punctuated = [add_punctuation(p) for p in paragraphs]
-        txt_file = output_dir / f"{video_title}_文字稿.txt"
+        # yt-dlp 返回的 title 可能含 \n 或多余空格，先清理
+        clean_title = video_title.replace('\n', ' ').strip()
+        txt_file = output_dir / f"{sanitize_filename(clean_title)}_文字稿.txt"
         header = (
-            f"# {video_title}\n"
+            f"# {clean_title}\n"
             f"来源: {video_url}\n"
             f"生成时间: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n"
             f"原始段落数: {len(whisper_segments)}，聚合后段落数: {len(paragraphs)}\n"
@@ -252,7 +260,7 @@ def process(video_file_str, output_dir_str, video_title_str, video_url_str):
             push("status", f"[100%] 路径过长，自动缩短标题重试...")
             # 截断标题后重试
             short_title = video_title[:80]
-            txt_file = output_dir / f"{short_title}_文字稿.txt"
+            txt_file = output_dir / f"{sanitize_filename(short_title)}_文字稿.txt"
             ok2, err2 = check_path_length(txt_file)
             if not ok2:
                 return {"ok": False, "error": f"路径长度问题: {err2}"}

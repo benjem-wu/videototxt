@@ -14,13 +14,11 @@ import time
 import urllib.request
 from pathlib import Path
 
-from _utils import sanitize_filename, validate_video_file, cleanup_part_files
+from _utils import sanitize_filename, validate_video_file, cleanup_part_files, find_and_rename_dl_file
 
 # 强制行缓冲 + UTF-8 输出
-sys.stdout = os.fdopen(sys.stdout.fileno(), 'w', buffering=1)
-sys.stderr = os.fdopen(sys.stderr.fileno(), 'w', buffering=1)
-sys.stdout.reconfigure(encoding='utf-8', errors='replace')
-sys.stderr.reconfigure(encoding='utf-8', errors='replace')
+sys.stdout.reconfigure(line_buffering=True, encoding='utf-8', errors='replace')
+sys.stderr.reconfigure(line_buffering=True, encoding='utf-8', errors='replace')
 
 print(f"XHS_DL_BOOT pid={os.getpid()}", flush=True)
 
@@ -70,7 +68,7 @@ def process(video_url, output_dir_str):
             write_progress(1)
 
             ydl_opts = {
-                'outtmpl': str(output_dir / "%(title)s.%(ext)s"),
+                'outtmpl': str(output_dir / f"dl{pid}_tmp.%(ext)s"),
                 'format': 'bestvideo+bestaudio/best',
                 'no_resume': True,
                 'ffmpeg_location': str(Path(__file__).parent / "ffmpeg" / "ffmpeg-master-latest-win64-gpl" / "bin"),
@@ -86,13 +84,7 @@ def process(video_url, output_dir_str):
             with yt_dlp.YoutubeDL(ydl_opts) as ydl:
                 info = ydl.extract_info(video_url, download=True)
                 video_title = info.get('title', 'xiaohongshu_video')
-                video_file = output_dir / f"{video_title}.mp4"
-                if not video_file.exists():
-                    for f in output_dir.glob(f"{video_title}.*"):
-                        if f.suffix in ['.mp4', '.mkv', '.flv']:
-                            video_file = f
-                            break
-
+                video_file = find_and_rename_dl_file(pid, video_title, output_dir)
             write_progress(100)
             push("status", f"[100%] yt_dlp下载完成: {video_title}")
 
@@ -118,8 +110,9 @@ def process(video_url, output_dir_str):
 
                 write_progress(60)
                 push("status", "[60%] 获取到视频地址，下载中...")
-                video_file = output_dir / f"{video_title}.mp4"
+                video_file = output_dir / f"dl{pid}_tmp.mp4"
                 _download_file(video_url_found, str(video_file), video_title)
+                video_file = find_and_rename_dl_file(pid, video_title, output_dir)
                 write_progress(100)
                 push("status", "[100%] Playwright下载完成")
 
