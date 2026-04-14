@@ -224,17 +224,24 @@ def process(video_url, output_dir_str):
             if m:
                 video_id = m.group(1)
         elif "v.douyin.com" in video_url:
-            try:
-                req = urllib.request.Request(video_url, headers={
-                    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
-                })
-                resp = urllib.request.urlopen(req, timeout=10)
-                final_url = resp.url
-                m = re.search(r'douyin\.com/video/(\d+)', final_url)
-                if m:
-                    video_id = m.group(1)
-            except Exception as e:
-                return {"ok": False, "error": f"短链接解析失败: {e}"}
+            # 短链接解析，支持重试（国内网络 v.douyin.com 可能失败）
+            video_id = None
+            for attempt in range(3):
+                try:
+                    req = urllib.request.Request(video_url, headers={
+                        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
+                    })
+                    resp = urllib.request.urlopen(req, timeout=15)
+                    final_url = resp.url
+                    m = re.search(r'douyin\.com/video/(\d+)', final_url)
+                    if m:
+                        video_id = m.group(1)
+                        break
+                except Exception:
+                    if attempt < 2:
+                        time.sleep(2)
+            if not video_id:
+                return {"ok": False, "error": "短链接解析失败，已重试3次"}
 
         if not video_id:
             return {"ok": False, "error": "无法解析抖音视频ID"}
@@ -326,7 +333,7 @@ def process(video_url, output_dir_str):
         # 清理进度文件
         try:
             (output_dir / f"_dl_progress_{pid}.txt").unlink()
-        except:
+        except Exception:
             pass
 
         return {

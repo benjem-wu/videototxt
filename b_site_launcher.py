@@ -17,6 +17,7 @@ import json
 import subprocess
 import webbrowser
 import re
+import atexit
 from pathlib import Path
 
 
@@ -528,17 +529,16 @@ def make_app():
             creationflags=getattr(subprocess, 'CREATE_NO_WINDOW', 0)
         )
         os._exit(0)
-        return ""
 
     @app.route("/transcribe", methods=["GET"])
     def transcribe():
         raw_input = request.args.get("url", "").strip()
         if not raw_input:
-            return "请输入B站/抖音/小红书视频链接", 400
+            return jsonify({"error": "请输入B站/抖音/小红书视频链接"}), 400
 
         video_url = parse_video_url(raw_input)
         if not video_url:
-            return "链接格式错误，请输入B站/抖音/小红书视频链接（如 https://www.bilibili.com/video/BVxxxxx、https://v.douyin.com/xxxxx、https://www.xiaohongshu.com/explore/xxxxx）", 400
+            return jsonify({"error": "链接格式错误，请输入B站/抖音/小红书视频链接（如 https://www.bilibili.com/video/BVxxxxx、https://v.douyin.com/xxxxx、https://www.xiaohongshu.com/explore/xxxxx）"}), 400
 
         q = queue.Queue()
         t = threading.Thread(target=yield_output, args=(q, video_url, OUTPUT_DIR))
@@ -581,6 +581,8 @@ def find_free_port():
 def main():
     OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
     cleanup_old_progress_files(OUTPUT_DIR)
+    # 进程退出时自动清理所有进度文件
+    atexit.register(lambda: cleanup_old_progress_files(OUTPUT_DIR))
     port = find_free_port()
     app = make_app()
 

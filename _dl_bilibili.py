@@ -9,7 +9,6 @@ import time
 from pathlib import Path
 
 from _utils import sanitize_filename
-from pathlib import Path
 
 # 强制行缓冲 + UTF-8 输出
 sys.stdout = os.fdopen(sys.stdout.fileno(), 'w', buffering=1)
@@ -47,6 +46,7 @@ def process(video_url, output_dir_str):
             return {
                 'outtmpl': str(output_dir / "%(title)s.%(ext)s"),
                 'format': 'bestvideo+bestaudio/best',
+                'no_resume': True,
                 'ffmpeg_location': str(Path(__file__).parent / "ffmpeg" / "ffmpeg-master-latest-win64-gpl" / "bin"),
                 'http_headers': {
                     'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36',
@@ -58,17 +58,15 @@ def process(video_url, output_dir_str):
             }
 
         def download_hook(d):
+            # 只写进度文件，不再往 stdout 写 STATUS（避免和 yt_dlp stderr 混输出）
             if d['status'] == 'downloading':
                 total = d.get('total_bytes') or d.get('total_bytes_estimate', 0)
                 downloaded = d.get('downloaded_bytes', 0)
                 if total > 0:
                     pct = downloaded / total * 100
-                    write_progress(pct)
-                    # 每5%打印一次
-                    if int(pct) % 5 == 0:
-                        push("status", f"视频下载中: {int(pct)}%")
+                    write_progress(int(pct))
             elif d['status'] == 'finished':
-                push("status", "视频下载完成，合并中...")
+                write_progress(100)
 
         # 方式1：Chrome Cookie
         try:
@@ -117,7 +115,7 @@ def process(video_url, output_dir_str):
         # 清理进度文件
         try:
             (output_dir / f"_dl_progress_{pid}.txt").unlink()
-        except:
+        except Exception:
             pass
 
         return {
