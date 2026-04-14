@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>B站/抖音/小红书视频转文字稿</title>
+    <title>B站/抖音/小红书/小宇宙视频转文字稿</title>
     <style>
         * {
             margin: 0;
@@ -205,10 +205,10 @@
     </style>
 </head>
 <body>
-    <h1>B站/抖音/小红书视频转文字稿</h1>
+    <h1>B站/抖音/小红书/小宇宙视频转文字稿</h1>
     <div class="container">
         <div class="input-box">
-            <input type="text" id="urlInput" placeholder="请输入B站、抖音或小红书视频链接" onkeydown="if(event.key==='Enter')startTranscribe()">
+            <input type="text" id="urlInput" placeholder="请输入B站、抖音、小红书或小宇宙链接" onkeydown="if(event.key==='Enter')startTranscribe()">
             <button id="startBtn" onclick="startTranscribe()">转成文字</button>
             <button id="resetBtn" onclick="resetAll()">重置</button>
         </div>
@@ -241,7 +241,7 @@
         function startTranscribe() {
             const url = document.getElementById('urlInput').value.trim();
             if (!url) {
-                alert('请输入B站、抖音或小红书视频链接');
+                alert('请输入B站、抖音、小红书或小宇宙链接');
                 return;
             }
 
@@ -330,17 +330,9 @@
                 es.close();
                 es = null;
             }
-            document.getElementById('urlInput').value = '';
-            document.getElementById('output').innerHTML = '<div class="placeholder">转写进度将显示在这里...</div>';
-            const textResult = document.getElementById('textResult');
-            textResult.textContent = '';
-            document.getElementById('saveBtn').classList.remove('active');
-            document.getElementById('startBtn').disabled = false;
-            document.getElementById('startBtn').textContent = '转成文字';
-            originalContent = '';
-            currentFilePath = '';
-            isPolishing = false;
-            polishedContent = '';
+            fetch('/restart', { method: 'POST' }).finally(() => {
+                location.reload(true);
+            });
         }
 
         // 监听文字框变化，检测是否被修改，刷新按钮状态

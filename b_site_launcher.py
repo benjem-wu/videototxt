@@ -193,6 +193,7 @@ ALLOWED_DOMAINS = {
     'bilibili.com', 'www.bilibili.com', 'm.bilibili.com', 'live.bilibili.com',
     'douyin.com', 'www.douyin.com', 'v.douyin.com',
     'xiaohongshu.com', 'www.xiaohongshu.com', 'xhslink.com',
+    'xiaoyuzhoufm.com', 'www.xiaoyuzhoufm.com',
 }
 
 def is_allowed_video_url(url):
@@ -256,6 +257,7 @@ def yield_output(q, video_url, output_dir):
     VIDEO_URL = video_url
     is_douyin = "douyin.com" in video_url
     is_xiaohongshu = "xiaohongshu.com" in video_url
+    is_xiaoyuzhoufm = "xiaoyuzhoufm.com" in video_url
 
     def push(event, data=""):
         if data is None:
@@ -272,6 +274,8 @@ def yield_output(q, video_url, output_dir):
             script_name = "_dl_xiaohongshu.py"
         elif is_douyin:
             script_name = "_dl_douyin.py"
+        elif is_xiaoyuzhoufm:
+            script_name = "_dl_xiaoyuzhoufm.py"
         else:
             script_name = "_dl_bilibili.py"
         push("status", f"[0%] 启动{script_name}...")
