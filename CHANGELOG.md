@@ -2,6 +2,105 @@
 
 ---
 
+## v1.2.1
+**日期：2026-04-14**
+**主题：修复416/WinError32、根治.part残留文件**
+
+### Bug 修复
+
+#### 1. [P0] B站下载 HTTP 416 错误
+- **问题**：上次下载残留的 `.mp4.part` 文件导致 yt_dlp 断点续传失败，B站服务器返回 416 Requested Range Not Satisfiable
+- **修复**：
+  - 所有下载器（B站/抖音/小红书）统一补加 `no_resume: True`
+  - 新增 `cleanup_part_files()` 在每次下载前清理所有残留 `.part` 文件
+
+#### 2. [P0] 小红书下载 WinError 32
+- **问题**：`.mp4.part` 文件被 yt_dlp 进程锁定无法 rename，Windows 返回 "另一个程序正在使用此文件"，yt_dlp 重试 3 次后放弃
+- **修复**：同上的 `no_resume: True` + `cleanup_part_files()` 从源头避免
+
+---
+
+## v1.2.0
+**日期：2026-04-14**
+**主题：四项重要改进**
+
+### 新增功能
+
+#### 1. 视频文件完整性校验
+- **位置**：新增 `validate_video_file()` 在 `_utils.py`
+- **机制**：用 ffprobe 检测视频实际时长，假文件/ corrupt 文件在进入转写前就被拦截
+- **应用**：B站/抖音/小红书三个下载器下载完成后统一校验
+
+#### 2. CUDA OOM 自动降级
+- **位置**：`_audio_to_text.py`
+- **机制**：Whisper 模型加载时优先使用 `float16`，失败后自动切换 `int8`，GPU 显存不足时不再崩溃
+- **流程**：`float16` → 失败则尝试 `int8` → 仍失败则上抛异常
+
+#### 3. B站下载网络重试
+- **位置**：`_dl_bilibili.py`
+- **机制**：Cookie 方式最多重试 3 次（每次间隔 2 秒），网络抖动自动恢复
+- **fallback**：Cookie 3 次全失败后自动切换无 Cookie 方式
+
+#### 4. Windows MAX_PATH 路径长度保护
+- **位置**：新增 `check_path_length()` 在 `_utils.py`
+- **机制**：保存文字稿前检查路径长度，超过 200 字符警告，超过 240 字符直接失败并提示
+- **自动修复**：路径过长时自动截断标题至 80 字符重试
+
+### 代码变更
+
+| 文件 | 变更 |
+|------|------|
+| `_utils.py` | 新增 `validate_video_file()`（ffprobe 时长检测）、`check_path_length()`（路径长度检查） |
+| `_audio_to_text.py` | 模型加载增加 float16→int8 降级逻辑、保存前路径长度检查 |
+| `_dl_bilibili.py` | Cookie 方式重试循环、ffprobe 完整性校验 |
+| `_dl_douyin.py` | ffprobe 完整性校验 |
+| `_dl_xiaohongshu.py` | ffprobe 完整性校验 |
+
+---
+
+## v1.1.0
+**日期：2026-04-14**
+**主题：修复B站下载416错误 + 多个鲁棒性改进**
+
+### Bug 修复
+
+#### 1. [P0] B站下载 HTTP 416 错误
+- **根因**：yt_dlp 默认尝试断点续传，但 B站 服务器不支持
+- **修复**：在 yt_dlp 选项中加入 `no_resume: True`，强制从 0 开始下载
+
+#### 2. [P1] download_hook 输出混入 yt_dlp stderr
+- **根因**：download_hook 内调用 `push()` 写 STATUS 到 stdout，导致和 yt_dlp stderr 混在一起
+- **表现**：日志里出现 `ERROR: ...STATUS:{"event":...` 这种混杂输出
+- **修复**：download_hook 不再写 STATUS，只写进度文件（整数百分比）
+
+### 改进
+
+#### 1. 抖音短链接解析重试
+- **位置**：`_dl_douyin.py`
+- **机制**：`v.douyin.com` 短链接解析失败时最多重试 3 次，每次间隔 2 秒
+- **解决**：国内网络访问短链接不稳定的问题
+
+#### 2. 代码质量规范化
+- **位置**：所有模块
+- **修复**：
+  - 修复裸 `except:` → `except Exception:`
+  - 删除 `_dl_bilibili.py` 中重复的 `from pathlib import Path` 导入
+
+#### 3. Web 标题更新
+- `"B站/抖音视频转文字稿"` → `"B站/抖音/小红书视频转文字稿"`
+- input placeholder 更新为 `"请输入B站、抖音或小红书视频链接"`
+
+### 代码变更
+
+| 文件 | 变更 |
+|------|------|
+| `_dl_bilibili.py` | `no_resume: True`、download_hook 只写文件不写 STATUS |
+| `_dl_douyin.py` | 短链接解析 3 次重试、修复裸 except |
+| `b_site_launcher.py` | `/transcribe` 错误返回改用 `jsonify()` |
+| `templates/index.html` | 标题/提示语加小红书 |
+
+---
+
 ## v1.7.0
 **日期：2026-04-14**
 **主题：安全修复 + 代码质量改进**
