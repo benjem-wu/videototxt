@@ -1,0 +1,350 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>B站视频转文字稿</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+        body {
+            font-family: -apple-system, "Microsoft YaHei", "PingFang SC", sans-serif;
+            background: #1a1a2e;
+            color: #e0e0e0;
+            min-height: 100vh;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            padding: 40px 20px;
+        }
+        h1 {
+            font-size: 24px;
+            font-weight: 600;
+            margin-bottom: 30px;
+            color: #ffffff;
+            letter-spacing: 2px;
+        }
+        .container {
+            width: 100%;
+            max-width: 900px;
+            display: flex;
+            flex-direction: column;
+            gap: 20px;
+        }
+        .input-box {
+            display: flex;
+            gap: 10px;
+        }
+        input[type="text"] {
+            flex: 1;
+            padding: 14px 18px;
+            border-radius: 10px;
+            border: 1px solid #333;
+            background: #16213e;
+            color: #e0e0e0;
+            font-size: 15px;
+            outline: none;
+            transition: border-color 0.2s;
+        }
+        input[type="text"]:focus {
+            border-color: #0f9467;
+        }
+        input[type="text"]::placeholder {
+            color: #666;
+        }
+        button {
+            padding: 14px 30px;
+            border-radius: 10px;
+            border: none;
+            background: #0f9467;
+            color: white;
+            font-size: 15px;
+            font-weight: 600;
+            cursor: pointer;
+            transition: background 0.2s, transform 0.1s;
+            white-space: nowrap;
+        }
+        button:hover {
+            background: #0d8058;
+        }
+        button:active {
+            transform: scale(0.97);
+        }
+        button:disabled {
+            background: #333;
+            color: #777;
+            cursor: not-allowed;
+            transform: none;
+        }
+        #resetBtn {
+            background: #444;
+        }
+        #resetBtn:hover {
+            background: #555;
+        }
+        .output-box {
+            background: #16213e;
+            border-radius: 12px;
+            border: 1px solid #333;
+            padding: 20px;
+            min-height: 200px;
+            max-height: 300px;
+            overflow-y: auto;
+            font-size: 15px;
+            line-height: 1.8;
+        }
+        .text-result {
+            background: #0f1929;
+            border-radius: 12px;
+            border: 1px solid #333;
+            padding: 20px;
+            min-height: 300px;
+            max-height: 500px;
+            overflow-y: auto;
+            font-size: 15px;
+            line-height: 2;
+            white-space: pre-wrap;
+            word-break: break-all;
+            color: #e0e0e0;
+            outline: none;
+        }
+        .text-result::-webkit-scrollbar {
+            width: 6px;
+        }
+        .text-result::-webkit-scrollbar-track {
+            background: #0f1929;
+        }
+        .text-result::-webkit-scrollbar-thumb {
+            background: #444;
+            border-radius: 3px;
+        }
+        .text-result:focus {
+            border-color: #0f9467;
+        }
+        #saveBtn {
+            background: #333;
+            color: #777;
+            cursor: not-allowed;
+        }
+        #saveBtn.active {
+            background: #0f9467;
+            color: white;
+            cursor: pointer;
+        }
+        #saveBtn.active:hover {
+            background: #0d8058;
+        }
+        .save-row {
+            display: flex;
+            justify-content: flex-end;
+            margin-top: 8px;
+        }
+        .output-box::-webkit-scrollbar {
+            width: 6px;
+        }
+        .output-box::-webkit-scrollbar-track {
+            background: #16213e;
+        }
+        .output-box::-webkit-scrollbar-thumb {
+            background: #444;
+            border-radius: 3px;
+        }
+        .placeholder {
+            color: #555;
+            text-align: center;
+            margin-top: 160px;
+        }
+        .log-line {
+            color: #aaa;
+            margin-bottom: 4px;
+        }
+        .log-line .tag {
+            color: #0f9467;
+            font-weight: 600;
+        }
+        .log-line .err {
+            color: #e74c3c;
+        }
+        .log-line .done {
+            color: #f39c12;
+        }
+        .log-line .info {
+            color: #888;
+            font-style: italic;
+        }
+        .footer {
+            margin-top: 30px;
+            font-size: 12px;
+            color: #444;
+            text-align: center;
+        }
+    </style>
+</head>
+<body>
+    <h1>B站视频转文字稿</h1>
+    <div class="container">
+        <div class="input-box">
+            <input type="text" id="urlInput" placeholder="请输入B站视频链接，如 https://www.bilibili.com/video/BVxxxxx" onkeydown="if(event.key==='Enter')startTranscribe()">
+            <button id="startBtn" onclick="startTranscribe()">转成文字</button>
+            <button id="resetBtn" onclick="resetAll()">重置</button>
+        </div>
+        <div class="output-box" id="output">
+            <div class="placeholder">转写进度将显示在这里...</div>
+        </div>
+        <div class="text-result" id="textResult" style="display:none" contenteditable="true" spellcheck="false" oninput="onTextChange()"></div>
+        <div class="save-row" id="saveRow" style="display:none">
+            <button id="saveBtn" onclick="saveText()">保存</button>
+        </div>
+    </div>
+    <div class="footer">使用 Faster-Whisper Large-v3 GPU 加速 · 请确保 CUDA 环境已就绪</div>
+
+    <script>
+        let es = null;
+
+        let originalContent = '';
+        let currentFilePath = '';
+
+        function startTranscribe() {
+            const url = document.getElementById('urlInput').value.trim();
+            if (!url) {
+                alert('请输入B站视频链接');
+                return;
+            }
+
+            const output = document.getElementById('output');
+            const textResult = document.getElementById('textResult');
+            const btn = document.getElementById('startBtn');
+
+            output.innerHTML = '';
+            textResult.style.display = 'none';
+            textResult.textContent = '';
+            originalContent = '';
+            currentFilePath = '';
+            document.getElementById('saveRow').style.display = 'none';
+            document.getElementById('saveBtn').classList.remove('active');
+            btn.disabled = true;
+            btn.textContent = '转写中...';
+
+            addLog('开始处理: ' + url);
+
+            es = new EventSource('/transcribe?url=' + encodeURIComponent(url));
+
+            es.addEventListener('status', function(e) {
+                addLog(e.data, 'tag');
+            });
+
+            es.addEventListener('done', function(e) {
+                const result = JSON.parse(e.data);
+                addLog('✅ 全部完成！文件: ' + result.file, 'done');
+                const textResult = document.getElementById('textResult');
+                textResult.style.display = 'block';
+                textResult.textContent = result.content;
+                originalContent = result.content;
+                currentFilePath = result.file;
+                document.getElementById('saveRow').style.display = 'flex';
+                document.getElementById('saveBtn').classList.remove('active');
+                btn.disabled = false;
+                btn.textContent = '转成文字';
+                es.close();
+                es = null;
+            });
+
+            es.addEventListener('error', function(e) {
+                addLog('❌ 错误: ' + e.data, 'err');
+                btn.disabled = false;
+                btn.textContent = '转成文字';
+                es.close();
+                es = null;
+            });
+
+            es.onerror = function() {
+                addLog('⚠️ 连接中断', 'err');
+                btn.disabled = false;
+                btn.textContent = '转成文字';
+                if (es) es.close();
+                es = null;
+            };
+        }
+
+        function addLog(text, type) {
+            const output = document.getElementById('output');
+            const p = document.createElement('div');
+            p.className = 'log-line';
+            if (type === 'tag') {
+                p.innerHTML = '<span class="tag">▶</span> ' + text;
+            } else if (type === 'done') {
+                p.innerHTML = '<span class="done">' + text + '</span>';
+            } else if (type === 'err') {
+                p.innerHTML = '<span class="err">' + text + '</span>';
+            } else {
+                p.textContent = text;
+            }
+            output.appendChild(p);
+            output.scrollTop = output.scrollHeight;
+        }
+
+        function resetAll() {
+            if (es) {
+                es.close();
+                es = null;
+            }
+            document.getElementById('urlInput').value = '';
+            document.getElementById('output').innerHTML = '<div class="placeholder">转写进度将显示在这里...</div>';
+            const textResult = document.getElementById('textResult');
+            textResult.style.display = 'none';
+            textResult.textContent = '';
+            document.getElementById('saveRow').style.display = 'none';
+            document.getElementById('saveBtn').classList.remove('active');
+            document.getElementById('startBtn').disabled = false;
+            document.getElementById('startBtn').textContent = '转成文字';
+            originalContent = '';
+            currentFilePath = '';
+        }
+
+        // 监听文字框变化，检测是否被修改
+        function onTextChange() {
+            const textResult = document.getElementById('textResult');
+            const saveBtn = document.getElementById('saveBtn');
+            if (textResult.textContent !== originalContent) {
+                saveBtn.classList.add('active');
+            } else {
+                saveBtn.classList.remove('active');
+            }
+        }
+
+        function saveText() {
+            const textResult = document.getElementById('textResult');
+            const content = textResult.textContent;
+            if (content === originalContent) return;
+
+            const btn = document.getElementById('saveBtn');
+            btn.textContent = '保存中...';
+            btn.classList.remove('active');
+
+            fetch('/save', {
+                method: 'POST',
+                headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify({file: currentFilePath, content: content})
+            }).then(r => r.json()).then(data => {
+                if (data.ok) {
+                    originalContent = content;
+                    btn.textContent = '已保存';
+                    setTimeout(() => {
+                        btn.textContent = '保存';
+                        btn.classList.remove('active');
+                    }, 1500);
+                } else {
+                    btn.textContent = '保存失败';
+                    setTimeout(() => btn.textContent = '保存', 2000);
+                }
+            }).catch(() => {
+                btn.textContent = '保存失败';
+                setTimeout(() => btn.textContent = '保存', 2000);
+            });
+        }
+    </script>
+</body>
+</html>
