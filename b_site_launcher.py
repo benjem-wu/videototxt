@@ -251,11 +251,15 @@ def run_subprocess(script_name, args, timeout=180):
 # ==================== 核心处理函数（在线程中运行）===================
 def yield_output(q, video_url, output_dir):
     """后台线程：下载视频 → 转写 → 推送进度到队列"""
+    import os
+    os.write(2, f"[YIELD] START pid={os.getpid()} sys={__import__('sys').executable[:50]}\n".encode())
     VIDEO_URL = video_url
     is_douyin = "douyin.com" in video_url
     is_xiaohongshu = "xiaohongshu.com" in video_url
 
     def push(event, data=""):
+        if data is None:
+            data = ""
         q.put(json.dumps({"event": event, "data": data}, ensure_ascii=False))
 
     import subprocess as sub_mod
@@ -273,66 +277,97 @@ def yield_output(q, video_url, output_dir):
         push("status", f"[0%] 启动{script_name}...")
         python_exe = sys.executable
         script_path = BASE_DIR / script_name
-        env = {**os.environ, 'CUDA_VISIBLE_DEVICES': '', 'PYTHONIOENCODING': 'utf-8'}
+        env = {**os.environ, 'CUDA_VISIBLE_DEVICES': '', 'PYTHONIOENCODING': 'utf-8', 'PYTHONUNBUFFERED': '1'}
+
         dl_proc = sub_mod.Popen(
             [python_exe, str(script_path), video_url, str(output_dir)],
-            stdout=sub_mod.PIPE, stderr=sub_mod.PIPE,
+            stdout=sub_mod.PIPE,
+            stderr=sub_mod.DEVNULL,
             creationflags=getattr(sub_mod, 'CREATE_NO_WINDOW', 0),
             env=env
         )
         dl_pid = dl_proc.pid
         dl_progress_file = output_dir / f"_dl_progress_{dl_pid}.txt"
 
-        # 后台轮询进度文件和子进程状态
-        def poll_dl():
-            last_pct = 0
-            last_pct_time = time.time()
-            while True:
-                if dl_proc.poll() is not None:
-                    break
-                if dl_progress_file.exists():
-                    try:
-                        pct = int(dl_progress_file.read_text(encoding='utf-8').strip())
-                        if pct != last_pct and pct > last_pct:
-                            last_pct = pct
-                            last_pct_time = time.time()
-                        elif pct == last_pct and last_pct > 0:
-                            # 进度停滞超过120秒，说明可能卡在合并阶段，强制终止
-                            if time.time() - last_pct_time > 60:
-                                print(f"[poll_dl] 进度停滞{pct}%超过120秒，强制终止", flush=True)
-                                dl_proc.kill()
-                                break
-                    except Exception:
-                        pass
-                time.sleep(1)
+        # 实时读 stdout 线程：每收到 STATUS 行立即推送；收到 RESULT 行或进程退出则停止
+        dl_result = [None]
+        stdout_active = [True]
 
-        poll_thread = threading.Thread(target=poll_dl, daemon=True)
-        poll_thread.start()
+        def read_stdout():
+            try:
+                for line in iter(dl_proc.stdout.readline, ''):
+                    if not stdout_active[0]:
+                        break
+                    line = line.decode('utf-8', errors='replace').strip()
+                    if not line:
+                        continue
+                    if line.startswith('RESULT:'):
+                        try:
+                            dl_result[0] = json.loads(line[7:])
+                        except json.JSONDecodeError:
+                            pass
+                        stdout_active[0] = False
+                        break
+                    elif line.startswith('STATUS:'):
+                        parts = line.split('STATUS:', 1)
+                        if len(parts) > 1:
+                            try:
+                                msg = json.loads(parts[1].strip())
+                                if isinstance(msg, dict):
+                                    push(msg.get('event', 'status'), msg.get('data', ''))
+                            except json.JSONDecodeError:
+                                pass
+            except Exception:
+                pass
 
-        try:
-            dl_proc.wait(timeout=600)
-        except sub_mod.TimeoutExpired:
-            dl_proc.kill()
-            dl_proc.wait()
-            push("error", "视频下载超时（超过10分钟），已强制终止")
-            return
-        finally:
-            poll_thread.join(timeout=2)
+        read_thread = threading.Thread(target=read_stdout, daemon=True)
+        read_thread.start()
 
-        stderr = dl_proc.stderr.read().decode('utf-8', errors='replace')[:500]
-        if stderr:
-            push("status", f"下载器stderr前200字: {stderr[:200]}")
+        # 轮询进度文件和子进程状态
+        last_pct = 0
+        last_pct_time = time.time()
+        poll_start = time.time()
 
-        # 读取结果
-        dl_result = None
-        stdout_text = dl_proc.stdout.read().decode('utf-8', errors='replace')
-        for line in stdout_text.split('\n'):
-            if line.startswith('RESULT:'):
-                try:
-                    dl_result = json.loads(line[7:])
-                except json.JSONDecodeError:
-                    pass
+        while True:
+            rc = dl_proc.poll()
+            # 等待进程退出 AND read_stdout 线程处理完 RESULT 行
+            if rc is not None and not stdout_active[0]:
                 break
+            if time.time() - poll_start > 600:
+                dl_proc.kill()
+                dl_proc.wait()
+                push("error", "视频下载超时（超过10分钟），已强制终止")
+                return
+            if dl_progress_file.exists():
+                try:
+                    pct = int(dl_progress_file.read_text(encoding='utf-8').strip())
+                    if pct > 0 and pct != last_pct:
+                        last_pct = pct
+                        last_pct_time = time.time()
+                        if pct % 10 == 0:
+                            push("status", f"视频下载中: {pct}%")
+                    elif pct > 0 and pct == last_pct and time.time() - last_pct_time > 120:
+                        push("status", f"进度停滞{int(pct)}%超过120秒，强制终止")
+                        dl_proc.kill()
+                        dl_proc.wait()
+                        return
+                except Exception:
+                    pass
+            time.sleep(1)
+
+        read_thread.join(timeout=3)
+        stdout_active[0] = False
+
+        # 如果有 RESULT 行，优先用它；否则从 stdout 剩余内容解析
+        if dl_result[0] is None:
+            remaining = dl_proc.stdout.read().decode('utf-8', errors='replace')
+            for line in remaining.split('\n'):
+                if line.startswith('RESULT:'):
+                    try:
+                        dl_result[0] = json.loads(line[7:])
+                    except json.JSONDecodeError:
+                        pass
+                    break
 
         # 清理进度文件
         try:
@@ -340,14 +375,14 @@ def yield_output(q, video_url, output_dir):
         except Exception:
             pass
 
-        ok = dl_proc.returncode == 0 and dl_result and dl_result.get('ok')
+        ok = dl_proc.returncode == 0 and dl_result[0] and dl_result[0].get('ok')
         if not ok:
-            err = dl_result.get('error', '未知错误') if dl_result else '下载器无输出'
+            err = (dl_result[0].get('error') if dl_result[0] else None) or '下载器无输出'
             push("error", f"视频下载失败: {err}")
             return
 
-        video_file = Path(dl_result['file'])
-        video_title = dl_result['title']
+        video_file = Path(dl_result[0]['file'])
+        video_title = dl_result[0]['title']
         push("status", f"[100%] 视频下载完成: {video_title}")
         push("status", "─── 视频下载完成 ✓ ───")
 
@@ -477,8 +512,53 @@ def yield_output(q, video_url, output_dir):
 
         txt_content = txt_result['content']
         txt_file = txt_result['file']
+
+        # ---- 转写完成后清理临时文件（保留 TXT）----
+        import os
+        _d = lambda s: os.write(2, (str(s) + '\n').encode('utf-8', errors='replace'))
+        _d(f"[CLEANUP] START video_file={video_file}")
+        push("status", f"[清理] video_file={video_file}，exists={video_file.exists() if video_file else 'N/A'}")
+        # 列出 output_dir 下所有文件（诊断用）
+        try:
+            all_files = list(output_dir.iterdir())
+            _d(f"[CLEANUP] output_dir files: {[f.name for f in all_files]}")
+            push("status", f"[清理] output_dir 文件列表: {[f.name for f in all_files]}")
+        except Exception as e:
+            _d(f"[CLEANUP] iterdir failed: {e}")
+
+        def try_delete(p):
+            try:
+                if p.exists():
+                    p.unlink()
+                    push("status", f"[清理] 已删除: {p.name}")
+                    _d(f"[CLEANUP] deleted: {p}")
+                    return True
+            except Exception as e:
+                push("status", f"[清理] 删除失败 {p}: {e}")
+                _d(f"[CLEANUP] delete failed: {p} -> {e}")
+            return False
+
+        # 清理下载的视频文件（优先用 rename 后的路径，备用来 output_dir 目录下一切 mp4）
+        if video_file:
+            try_delete(video_file)
+        # 备选：output_dir 目录下所有 mp4/mkv 文件
+        for mp4 in output_dir.glob("*.mp4"):
+            try_delete(mp4)
+        for mkv in output_dir.glob("*.mkv"):
+            try_delete(mkv)
+        # 清理音频提取残留
+        try_delete(output_dir / "audio.wav")
+        # 清理所有 dl*_tmp.* 残留文件
+        for f in output_dir.glob("dl*_tmp.*"):
+            try_delete(f)
+        # 清理所有非 txt 文件（兜底，确保 json 等残留文件也被清除）
+        for f in output_dir.iterdir():
+            if f.suffix.lower() != '.txt':
+                try_delete(f)
+        _d("[CLEANUP] DONE")
+
         push("status", "─── 音频转文字完成 ✓ ───")
-        push("done", json.dumps({"file": txt_file, "content": txt_content}, ensure_ascii=False))
+        push("done", {"file": txt_file, "content": txt_content})
 
     except Exception as e:
         import traceback
@@ -490,6 +570,12 @@ def yield_output(q, video_url, output_dir):
 def make_app():
     from flask import Flask, request, Response, stream_with_context
     app = Flask(__name__)
+
+    def esc(s):
+        """将字符串中的非ASCII字符和换行符转为unicode_escape编码，防止Windows GBK编码崩溃"""
+        if s is None:
+            s = ""
+        return s.encode('unicode_escape').decode('ascii')
 
     @app.route("/")
     def index():
@@ -519,6 +605,49 @@ def make_app():
         except Exception as e:
             return jsonify({"ok": False, "error": str(e)})
 
+    @app.route("/polish", methods=["POST"])
+    def polish():
+        from flask import request, jsonify
+        data = request.get_json()
+        text_content = data.get("content", "").strip()
+        if not text_content:
+            return jsonify({"ok": False, "error": "文本内容为空"}), 400
+
+        python_exe = sys.executable
+        script_path = BASE_DIR / "_text_polish.py"
+        env = {**os.environ, 'PYTHONIOENCODING': 'utf-8'}
+        proc = subprocess.Popen(
+            [python_exe, str(script_path), text_content],
+            stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+            creationflags=getattr(subprocess, 'CREATE_NO_WINDOW', 0),
+            env=env
+        )
+
+        try:
+            stdout, stderr = proc.communicate(timeout=300)
+        except subprocess.TimeoutExpired:
+            proc.kill()
+            stdout, stderr = proc.communicate()
+            return jsonify({"ok": False, "error": "润色超时（超过2分钟）"}), 500
+
+        stderr_text = stderr.decode('utf-8', errors='replace')[:200]
+        stdout_text = stdout.decode('utf-8', errors='replace')
+
+        result = None
+        for line in stdout_text.split('\n'):
+            if line.startswith('RESULT:'):
+                try:
+                    result = json.loads(line[7:])
+                except json.JSONDecodeError:
+                    pass
+                break
+
+        if not result or not result.get('ok'):
+            err = result.get('error', '润色失败') if result else '润色器无输出'
+            return jsonify({"ok": False, "error": err, "stderr": stderr_text}), 500
+
+        return jsonify(result)
+
     @app.route("/restart", methods=["POST"])
     def restart():
         # 启动新的 Python 进程运行自身，然后关闭当前进程
@@ -533,35 +662,45 @@ def make_app():
     @app.route("/transcribe", methods=["GET"])
     def transcribe():
         raw_input = request.args.get("url", "").strip()
-        if not raw_input:
-            return jsonify({"error": "请输入B站/抖音/小红书视频链接"}), 400
-
-        video_url = parse_video_url(raw_input)
-        if not video_url:
-            return jsonify({"error": "链接格式错误，请输入B站/抖音/小红书视频链接（如 https://www.bilibili.com/video/BVxxxxx、https://v.douyin.com/xxxxx、https://www.xiaohongshu.com/explore/xxxxx）"}), 400
-
-        q = queue.Queue()
-        t = threading.Thread(target=yield_output, args=(q, video_url, OUTPUT_DIR))
-        t.daemon = True
-        t.start()
+        video_url = parse_video_url(raw_input) if raw_input else None
 
         def generate():
+            # URL 校验也通过 SSE 错误事件返回，避免 HTTP 400 导致 e.data 为 undefined
+            if not raw_input:
+                yield "event: error\ndata: " + esc("请输入B站/抖音/小红书视频链接") + "\n\n"
+                return
+            if not video_url:
+                yield "event: error\ndata: " + esc("链接格式错误，请输入B站/抖音/小红书视频链接（如 https://www.bilibili.com/video/BVxxxxx）") + "\n\n"
+                return
+
+            q = queue.Queue()
+            t = threading.Thread(target=yield_output, args=(q, video_url, OUTPUT_DIR))
+            t.daemon = True
+            t.start()
+
             try:
                 while True:
                     try:
                         item = q.get(timeout=7200)
                     except queue.Empty:
-                        yield f"event: error\ndata: 服务器处理超时\n\n"
+                        yield "event: error\ndata: " + esc("服务器处理超时") + "\n\n"
                         break
                     msg = json.loads(item)
-                    event, data = msg["event"], msg["data"]
-                    if event == "done" or event == "error":
-                        yield f"event: {event}\ndata: {data}\n\n"
+                    event = msg["event"]
+                    if event == "done":
+                        # done 事件 data 是 dict，直接 JSON 序列化发给前端，不走 esc()
+                        done_data = json.dumps(msg.get("data"), ensure_ascii=False)
+                        yield f"event: done\ndata: {done_data}\n\n"
+                        break
+                    elif event == "error":
+                        data = msg.get("data") or ""
+                        yield f"event: error\ndata: {esc(data)}\n\n"
                         break
                     else:
-                        yield f"event: status\ndata: {data}\n\n"
+                        data = msg.get("data") or ""
+                        yield f"event: status\ndata: {esc(data)}\n\n"
             except Exception as e:
-                yield f"event: error\ndata: 连接异常: {e}\n\n"
+                yield "event: error\ndata: " + esc(f"连接异常: {e}") + "\n\n"
 
         return Response(
             stream_with_context(generate()),
