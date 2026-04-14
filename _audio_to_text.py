@@ -102,10 +102,14 @@ def process(video_file_str, output_dir_str, video_title_str, video_url_str):
         os.environ["PATH"] = env_path
         os.environ["HF_ENDPOINT"] = HF_ENDPOINT
 
-        # ---- 提取音频 ----
+        # ---- 判断是否需要音频提取 ----
+        # 已经是音频文件（播客等）则跳过提取，直接使用原文件
+        audio_exts = {'.m4a', '.mp3', '.wav', '.aac', '.ogg', '.flac', '.opus', '.wma', '.aiff'}
+        is_audio_file = video_file.suffix.lower() in audio_exts
+
         audio_path = output_dir / "audio.wav"
 
-        # 先用 ffprobe 获取视频总时长（用于进度计算）
+        # 用 ffprobe 获取总时长（用于进度计算）
         probe_cmd = [
             str(FFMPEG_PATH.parent / "ffprobe.exe"),
             "-v", "quiet", "-show_entries", "format=duration",
@@ -118,47 +122,53 @@ def process(video_file_str, output_dir_str, video_title_str, video_url_str):
         except Exception:
             total_dur = 0
 
-        push("status", "[1%] 正在提取音频...")
-        write_progress(1)
+        if is_audio_file:
+            # 已经是音频，跳过 ffmpeg 提取，直接使用原文件
+            push("status", "[1%] 检测为音频文件，跳过提取步骤")
+            write_progress(5)
+            audio_path = video_file  # 直接用原文件
+        else:
+            # 视频文件，需要用 ffmpeg 提取音频
+            push("status", "[1%] 正在提取音频...")
+            write_progress(1)
 
-        # 用 Popen + -progress 实时追踪进度
-        cmd = [
-            str(FFMPEG_PATH),
-            "-i", str(video_file),
-            "-vn", "-acodec", "pcm_s16le",
-            "-ar", "16000", "-ac", "1", "-y",
-            "-progress", "pipe:1",
-            str(audio_path)
-        ]
-        proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
-                                encoding='utf-8', errors='replace')
-        last_pct = 1
-        while True:
-            line = proc.stdout.readline()
-            if not line:
-                break
-            line = line.strip()
-            if line.startswith("out_time_ms="):
-                try:
-                    ms = int(line.split("=", 1)[1])
-                    cur_sec = ms / 1_000_000
-                    if total_dur > 0:
-                        pct = min(99, int(cur_sec / total_dur * 100))
-                        if pct != last_pct:
-                            push("status", f"[{pct}%] 正在提取音频...")
-                            write_progress(pct)
-                            last_pct = pct
-                except Exception:
-                    pass
-            elif line == "progress=end":
-                break
-        proc.wait()
-        if proc.returncode != 0:
-            write_progress(0)
-            return {"ok": False, "error": f"音频提取失败"}
-        write_progress(100)
-        push("status", "[100%] 音频提取完成")
-        push("status", "─── 音频提取完成 ✓ ───")
+            cmd = [
+                str(FFMPEG_PATH),
+                "-i", str(video_file),
+                "-vn", "-acodec", "pcm_s16le",
+                "-ar", "16000", "-ac", "1", "-y",
+                "-progress", "pipe:1",
+                str(audio_path)
+            ]
+            proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
+                                    encoding='utf-8', errors='replace')
+            last_pct = 1
+            while True:
+                line = proc.stdout.readline()
+                if not line:
+                    break
+                line = line.strip()
+                if line.startswith("out_time_ms="):
+                    try:
+                        ms = int(line.split("=", 1)[1])
+                        cur_sec = ms / 1_000_000
+                        if total_dur > 0:
+                            pct = min(99, int(cur_sec / total_dur * 100))
+                            if pct != last_pct:
+                                push("status", f"[{pct}%] 正在提取音频...")
+                                write_progress(pct)
+                                last_pct = pct
+                    except Exception:
+                        pass
+                elif line == "progress=end":
+                    break
+            proc.wait()
+            if proc.returncode != 0:
+                write_progress(0)
+                return {"ok": False, "error": f"音频提取失败"}
+            write_progress(100)
+            push("status", "[100%] 音频提取完成")
+            push("status", "─── 音频提取完成 ✓ ───")
 
         # ---- 加载Whisper模型（OOM时自动降级到int8）----
         push("status", f"[2%] 正在加载 Whisper {WHISPER_MODEL} 模型...")
