@@ -14,7 +14,7 @@ import time
 import urllib.request
 from pathlib import Path
 
-from _utils import sanitize_filename
+from _utils import sanitize_filename, validate_video_file
 
 # 强制行缓冲 + UTF-8 输出
 sys.stdout = os.fdopen(sys.stdout.fileno(), 'w', buffering=1)
@@ -125,10 +125,13 @@ def process(video_url, output_dir_str):
         if not video_file or not video_file.exists():
             return {"ok": False, "error": f"视频文件未找到: {video_title}"}
 
-        file_size = video_file.stat().st_size
-        if file_size < 50000:
-            video_file.unlink()
-            return {"ok": False, "error": f"下载的视频异常（小于50KB）"}
+        ok, err = validate_video_file(
+            video_file,
+            Path(__file__).parent / "ffmpeg" / "ffmpeg-master-latest-win64-gpl" / "bin"
+        )
+        if not ok:
+            video_file.unlink(missing_ok=True)
+            return {"ok": False, "error": f"视频文件校验失败: {err}"}
 
         # 清理进度文件
         try:

@@ -11,6 +11,8 @@ import time
 from pathlib import Path
 from datetime import datetime
 
+from _utils import check_path_length
+
 # 强制行缓冲 + UTF-8 输出
 sys.stdout = os.fdopen(sys.stdout.fileno(), 'w', buffering=1)
 sys.stderr = os.fdopen(sys.stderr.fileno(), 'w', buffering=1)
@@ -155,13 +157,23 @@ def process(video_file_str, output_dir_str, video_title_str, video_url_str):
         push("status", "[100%] 音频提取完成")
         push("status", "─── 音频提取完成 ✓ ───")
 
-        # ---- 加载Whisper模型 ----
+        # ---- 加载Whisper模型（OOM时自动降级到int8）----
         push("status", f"[2%] 正在加载 Whisper {WHISPER_MODEL} 模型...")
         import faster_whisper
         import threading
         global _whisper_model_cache
         if _whisper_model_cache is None:
-            _whisper_model_cache = faster_whisper.WhisperModel(WHISPER_MODEL, device="cuda", compute_type="float16")
+            for compute_type in ("float16", "int8"):
+                try:
+                    _whisper_model_cache = faster_whisper.WhisperModel(
+                        WHISPER_MODEL, device="cuda", compute_type=compute_type
+                    )
+                    push("status", f"[2%] 模型加载成功（compute_type={compute_type}）")
+                    break
+                except Exception as e:
+                    if compute_type == "int8":
+                        raise  # int8也失败则上抛
+                    push("status", f"float16加载失败，尝试降级到int8: {e}")
         model = _whisper_model_cache
         push("status", "[5%] 模型加载完成，开始识别...")
 
@@ -233,6 +245,17 @@ def process(video_file_str, output_dir_str, video_title_str, video_url_str):
         )
         body = "\n\n".join(punctuated)
         full_content = header + body
+
+        # 路径长度检查，防止 Windows MAX_PATH 问题
+        ok, err = check_path_length(txt_file)
+        if not ok:
+            push("status", f"[100%] 路径过长，自动缩短标题重试...")
+            # 截断标题后重试
+            short_title = video_title[:80]
+            txt_file = output_dir / f"{short_title}_文字稿.txt"
+            ok2, err2 = check_path_length(txt_file)
+            if not ok2:
+                return {"ok": False, "error": f"路径长度问题: {err2}"}
 
         with open(txt_file, 'w', encoding='utf-8') as f:
             f.write(full_content)

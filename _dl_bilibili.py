@@ -8,7 +8,7 @@ import json
 import time
 from pathlib import Path
 
-from _utils import sanitize_filename
+from _utils import sanitize_filename, validate_video_file
 
 # 强制行缓冲 + UTF-8 输出
 sys.stdout = os.fdopen(sys.stdout.fileno(), 'w', buffering=1)
@@ -38,7 +38,6 @@ def process(video_url, output_dir_str):
 
         import yt_dlp
 
-        # B站：优先用Chrome Cookie，失败则用无Cookie方式
         video_file = None
         video_title = "unknown"
 
@@ -58,7 +57,6 @@ def process(video_url, output_dir_str):
             }
 
         def download_hook(d):
-            # 只写进度文件，不再往 stdout 写 STATUS（避免和 yt_dlp stderr 混输出）
             if d['status'] == 'downloading':
                 total = d.get('total_bytes') or d.get('total_bytes_estimate', 0)
                 downloaded = d.get('downloaded_bytes', 0)
@@ -68,29 +66,41 @@ def process(video_url, output_dir_str):
             elif d['status'] == 'finished':
                 write_progress(100)
 
-        # 方式1：Chrome Cookie
-        try:
-            push("status", "尝试Cookie方式...")
-            ydl_opts = make_ydl_opts()
-            ydl_opts['cookies-from-browser'] = 'chrome'
-            ydl_opts['progress_hooks'].append(download_hook)
-            with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-                info = ydl.extract_info(video_url, download=True)
-                video_title = info.get('title', 'unknown')
-                video_file = output_dir / f"{video_title}.mp4"
-                if not video_file.exists():
-                    for f in output_dir.glob(f"{video_title}.*"):
-                        if f.suffix in ['.mp4', '.mkv', '.flv']:
-                            video_file = f
-                            break
-            write_progress(100)
-            push("status", f"B站视频下载完成（Cookie）: {video_title}")
-        except Exception as e_cookie:
-            write_progress(0)
-            push("status", f"Cookie方式失败: {e_cookie}，尝试无Cookie...")
-            ydl_opts_direct = make_ydl_opts()
-            ydl_opts_direct['progress_hooks'].append(download_hook)
+        # 方式1：Chrome Cookie（网络不稳时重试2次）
+        cookie_ok = False
+        for attempt in range(3):
             try:
+                push("status", f"尝试Cookie方式...（第{attempt+1}次）")
+                ydl_opts = make_ydl_opts()
+                ydl_opts['cookies-from-browser'] = 'chrome'
+                ydl_opts['progress_hooks'].append(download_hook)
+                with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+                    info = ydl.extract_info(video_url, download=True)
+                    video_title = info.get('title', 'unknown')
+                    video_file = output_dir / f"{video_title}.mp4"
+                    if not video_file.exists():
+                        for f in output_dir.glob(f"{video_title}.*"):
+                            if f.suffix in ['.mp4', '.mkv', '.flv']:
+                                video_file = f
+                                break
+                write_progress(100)
+                push("status", f"B站视频下载完成（Cookie）: {video_title}")
+                cookie_ok = True
+                break
+            except Exception as e_cookie:
+                if attempt < 2:
+                    write_progress(0)
+                    push("status", f"Cookie方式第{attempt+1}次失败: {e_cookie}，重试中...")
+                    time.sleep(2)
+                    continue
+                write_progress(0)
+                push("status", f"Cookie方式全部失败，尝试无Cookie...")
+
+        # 方式2：无Cookie兜底（仅在Cookie失败时执行）
+        if not cookie_ok:
+            try:
+                ydl_opts_direct = make_ydl_opts()
+                ydl_opts_direct['progress_hooks'].append(download_hook)
                 with yt_dlp.YoutubeDL(ydl_opts_direct) as ydl:
                     info = ydl.extract_info(video_url, download=True)
                     video_title = info.get('title', 'unknown')
@@ -105,12 +115,16 @@ def process(video_url, output_dir_str):
             except Exception as e2:
                 return {"ok": False, "error": f"B站视频下载失败: {e2}"}
 
+        # 校验文件
         if not video_file or not video_file.exists():
             return {"ok": False, "error": f"视频文件未找到: {video_title}"}
 
-        file_size = video_file.stat().st_size
-        if file_size < 50000:
-            return {"ok": False, "error": f"下载的视频异常（小于50KB）"}
+        ok, err = validate_video_file(
+            video_file,
+            Path(__file__).parent / "ffmpeg" / "ffmpeg-master-latest-win64-gpl" / "bin"
+        )
+        if not ok:
+            return {"ok": False, "error": f"视频文件校验失败: {err}"}
 
         # 清理进度文件
         try:
