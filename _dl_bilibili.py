@@ -8,7 +8,7 @@ import json
 import time
 from pathlib import Path
 
-from _utils import sanitize_filename, validate_video_file
+from _utils import sanitize_filename, validate_video_file, cleanup_part_files
 
 # 强制行缓冲 + UTF-8 输出
 sys.stdout = os.fdopen(sys.stdout.fileno(), 'w', buffering=1)
@@ -35,6 +35,9 @@ def process(video_url, output_dir_str):
 
     try:
         push("status", "正在下载B站视频...")
+
+        # 下载前清理残留 .part 文件
+        cleanup_part_files(output_dir)
 
         import yt_dlp
 

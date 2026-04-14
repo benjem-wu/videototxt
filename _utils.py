@@ -66,6 +66,22 @@ MAX_PATH_WARN = 200   # 警告阈值
 MAX_PATH_FAIL = 240   # 超过此值直接失败
 
 
+def cleanup_part_files(output_dir):
+    """
+    下载前清理所有残留的 .part 文件。
+    yt_dlp 断点续传失败后会留下 .part 文件，
+    再次下载同一标题视频时（即使 no_resume=True）也可能报
+    WinError 32（文件被占用）或 416。
+    清理后再下载可完全避免此类问题。
+    """
+    output_path = Path(output_dir)
+    for p in output_path.glob("*.part"):
+        try:
+            p.unlink()
+        except Exception:
+            pass
+
+
 def check_path_length(file_path):
     """
     检查文件路径长度是否安全。返回 (ok, error_message)。

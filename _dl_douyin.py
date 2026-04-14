@@ -14,7 +14,7 @@ import time
 import urllib.request
 from pathlib import Path
 
-from _utils import sanitize_filename, validate_video_file
+from _utils import sanitize_filename, validate_video_file, cleanup_part_files
 
 # 强制行缓冲 + UTF-8 输出
 sys.stdout = os.fdopen(sys.stdout.fileno(), 'w', buffering=1)
@@ -217,6 +217,9 @@ def process(video_url, output_dir_str):
     try:
         push("status", "正在下载抖音视频...")
 
+        # 下载前清理残留 .part 文件
+        cleanup_part_files(output_dir)
+
         # 解析 video_id
         video_id = None
         if "douyin.com/video/" in video_url:
@@ -264,6 +267,7 @@ def process(video_url, output_dir_str):
         ydl_opts = {
             'outtmpl': str(output_dir / "%(title)s.%(ext)s"),
             'format': 'bestvideo+bestaudio/best',
+            'no_resume': True,
             'ffmpeg_location': str(Path(__file__).parent / "ffmpeg" / "ffmpeg-master-latest-win64-gpl" / "bin"),
             'http_headers': {
                 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36',
